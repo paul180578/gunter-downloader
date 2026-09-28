@@ -9,6 +9,7 @@ from flask import Flask, render_template, request, jsonify, send_file, after_thi
 import yt_dlp
 import imageio_ffmpeg
 
+
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
