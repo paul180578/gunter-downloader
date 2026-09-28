@@ -14,8 +14,21 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
-COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Buscar cookies.txt tanto en BASE_DIR como en la raíz de ejecución
+possible_cookie_paths = [
+    os.path.join(BASE_DIR, "cookies.txt"),
+    os.path.abspath("cookies.txt"),
+    "/opt/render/project/src/cookies.txt"
+]
+COOKIES_PATH = None
+for p in possible_cookie_paths:
+    if os.path.exists(p) and os.path.getsize(p) > 0:
+        COOKIES_PATH = p
+        break
+
+print(f"--> [CONFIG] Ruta de cookies detectada: {COOKIES_PATH}", flush=True)
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 try:
@@ -97,12 +110,16 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         'noplaylist': True,
         'socket_timeout': 30,
         'nocheckcertificate': True,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'verbose': True,
         'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
+        }
     }
 
-    if os.path.exists(COOKIES_PATH):
+    if COOKIES_PATH:
         ydl_opts['cookiefile'] = COOKIES_PATH
 
     if tipo == "video":
