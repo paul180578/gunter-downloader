@@ -16,13 +16,14 @@ TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+try:
+    os.chmod(FFMPEG_PATH, 0o755)
+except Exception:
+    pass
 
-# Registro en memoria para el seguimiento de tareas
 progress_tracker = {}
 
-# --- LIMPIEZA AUTOMÁTICA DE ARCHIVOS HUÉRFANOS ---
 def auto_cleanup_worker():
-    """Elimina carpetas que tengan más de 10 minutos si el usuario nunca descargó el archivo."""
     while True:
         try:
             ahora = time.time()
@@ -30,17 +31,14 @@ def auto_cleanup_worker():
                 for folder_name in os.listdir(TEMP_DIR):
                     folder_path = os.path.join(TEMP_DIR, folder_name)
                     if os.path.isdir(folder_path):
-                        # Si fue creada hace más de 10 minutos (600 s)
                         if ahora - os.path.getctime(folder_path) > 600:
                             shutil.rmtree(folder_path, ignore_errors=True)
                             progress_tracker.pop(folder_name, None)
         except Exception:
             pass
-        time.sleep(120)  # Revisa cada 2 minutos
+        time.sleep(120)
 
-# Iniciar limpiador en segundo plano
 threading.Thread(target=auto_cleanup_worker, daemon=True).start()
-
 
 def my_progress_hook(d, task_id):
     if d.get('status') == 'downloading':
@@ -82,7 +80,13 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
     task_dir = os.path.join(TEMP_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    # 1. Configuración para Video 4K / Full HD (TikTok, IG, FB, YouTube)
+    extractor_args_config = {
+        'youtube': {
+            'player_client': ['android', 'ios', 'web_creator'],
+            'player_skip': ['webpage', 'configs']
+        }
+    }
+
     if tipo == "video":
         if calidad_video == "best" or calidad_video == "2160":
             formato = 'bestvideo+bestaudio/best'
@@ -95,14 +99,15 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             'ffmpeg_location': FFMPEG_PATH,
             'merge_output_format': 'mp4',
             'noplaylist': True,
-            'ignoreerrors': True,
+            'ignoreerrors': False,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': {'youtube': {'player_client': ['web', 'default']}},
+            'extractor_args': extractor_args_config,
+            'socket_timeout': 20,
+            'nocheckcertificate': True,
             'quiet': True,
         }
         download_target = target
 
-    # 2. Configuración para enlace directo MP3 (YouTube)
     elif tipo == "link":
         if "&list=RD" in target:
             target = target.split("&list=RD")[0]
@@ -112,18 +117,19 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
             'ffmpeg_location': FFMPEG_PATH,
             'noplaylist': True,
-            'ignoreerrors': True,
+            'ignoreerrors': False,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': {'youtube': {'player_client': ['web', 'default']}},
+            'extractor_args': extractor_args_config,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
+            'socket_timeout': 20,
+            'nocheckcertificate': True,
             'quiet': True,
         }
 
-    # 3. Configuración para búsqueda en lote MP3
     else:
         download_target = f"ytsearch{cantidad}:{target}"
         opciones = {
@@ -133,12 +139,14 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             'noplaylist': False,
             'ignoreerrors': True,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': {'youtube': {'player_client': ['web', 'default']}},
+            'extractor_args': extractor_args_config,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
+            'socket_timeout': 20,
+            'nocheckcertificate': True,
             'quiet': True,
         }
 
@@ -149,7 +157,7 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         extensiones = (".mp3", ".mp4", ".mkv", ".webm")
         archivos = [f for f in os.listdir(task_dir) if f.endswith(extensiones)]
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo descargar el archivo."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo obtener el archivo."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
@@ -167,6 +175,7 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             "zip_file": zip_name if len(archivos) > 1 else None
         }
     except Exception as e:
+        print(f"[ERROR DESCARGA] {str(e)}", flush=True)
         progress_tracker[task_id] = {"percent": 0, "status": f"Error: {e}"}
         shutil.rmtree(task_dir, ignore_errors=True)
 
@@ -198,7 +207,6 @@ def check_progress(task_id):
     info = progress_tracker.get(task_id, {"percent": 0, "status": "Procesando..."})
     return jsonify(info)
 
-# Descargar archivo único (y autoeliminar de inmediato)
 @app.route("/get-single-song/<task_id>/<path:filename>")
 def get_single_song(task_id, filename):
     task_dir = os.path.join(TEMP_DIR, task_id)
@@ -209,9 +217,8 @@ def get_single_song(task_id, filename):
 
     @after_this_request
     def cleanup(response):
-        # Si es descarga individual o se termina el proceso, borra la carpeta y el registro
         def remove_data():
-            time.sleep(2)  # Pequeño margen para asegurar que el stream HTTP finalizó
+            time.sleep(2)
             shutil.rmtree(task_dir, ignore_errors=True)
             progress_tracker.pop(task_id, None)
 
@@ -220,7 +227,6 @@ def get_single_song(task_id, filename):
 
     return send_file(file_path, as_attachment=True, download_name=filename)
 
-# Descargar el paquete ZIP completo (y autoeliminar de inmediato)
 @app.route("/get-zip/<task_id>")
 def get_zip(task_id):
     task_dir = os.path.join(TEMP_DIR, task_id)
