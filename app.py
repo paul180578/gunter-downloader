@@ -85,23 +85,15 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         'ffmpeg_location': FFMPEG_PATH,
         'socket_timeout': 30,
         'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios'],
-                'player_skip': ['webpage', 'configs', 'js']
-            }
-        },
         'quiet': True,
+        'no_warnings': True,
     }
 
     if os.path.exists(COOKIES_PATH):
         base_opts['cookiefile'] = COOKIES_PATH
 
     if tipo == "video":
-        if calidad_video == "best" or calidad_video == "2160":
-            formato = 'bestvideo+bestaudio/best'
-        else:
-            formato = f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
+        formato = 'bestvideo+bestaudio/best' if calidad_video in ("best", "2160") else f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
 
         opciones = {
             **base_opts,
@@ -155,7 +147,7 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         extensiones = (".mp3", ".mp4", ".mkv", ".webm")
         archivos = [f for f in os.listdir(task_dir) if f.endswith(extensiones)]
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo obtener el archivo."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: Formato no disponible o descarga fallida."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
