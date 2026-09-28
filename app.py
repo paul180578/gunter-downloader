@@ -7,6 +7,7 @@ import zipfile
 import threading
 import requests
 from flask import Flask, render_template, request, jsonify, send_file, after_this_request
+from pytubefix import YouTube, Search
 
 app = Flask(__name__)
 
@@ -33,12 +34,12 @@ def auto_cleanup_worker():
 
 threading.Thread(target=auto_cleanup_worker, daemon=True).start()
 
-def extract_video_id(url):
+def clean_youtube_url(url):
     url = url.strip()
     match = re.search(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
     if match:
-        return match.group(1)
-    return None
+        return f"https://www.youtube.com/watch?v={match.group(1)}"
+    return url
 
 @app.route("/")
 def index():
@@ -58,138 +59,50 @@ def suggest():
         pass
     return jsonify([])
 
-def resolve_download_url(video_id, is_audio=True):
-    """Obtiene el enlace directo de descarga sin requerir autenticación ni cookies locales."""
-    clean_url = f"https://www.youtube.com/watch?v={video_id}"
-    
-    # Intento 1: API de conversión pública y2mate
-    try:
-        init_res = requests.post(
-            "https://www-y2mate.com/mates/analyzeV2/ajax",
-            data={"k_query": clean_url, "k_page": "home", "hl": "es", "q_auto": 0},
-            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
-            timeout=10
-        ).json()
-        
-        vid = init_res.get("vid")
-        title = init_res.get("title", f"media_{video_id}")
-        
-        if is_audio:
-            links = init_res.get("links", {}).get("mp3", {})
-            k = next(iter(links.values()))["k"]
-        else:
-            links = init_res.get("links", {}).get("mp4", {})
-            k = next(iter(links.values()))["k"]
-
-        conv_res = requests.post(
-            "https://www-y2mate.com/mates/convertV2/index",
-            data={"vid": vid, "k": k},
-            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
-            timeout=15
-        ).json()
-
-        dlink = conv_res.get("dlink")
-        if dlink:
-            return dlink, title
-    except Exception:
-        pass
-
-    # Intento 2: Invidious Stream Resolver
-    invidious_hosts = [
-        "https://inv.nadeko.net",
-        "https://invidious.nerdvpn.de",
-        "https://yt.artemislena.eu"
-    ]
-    for host in invidious_hosts:
-        try:
-            r = requests.get(f"{host}/api/v1/videos/{video_id}", timeout=6).json()
-            title = r.get("title", f"media_{video_id}")
-            if is_audio:
-                formats = [f for f in r.get("adaptiveFormats", []) if "audio" in f.get("type", "")]
-                if formats:
-                    return formats[0].get("url"), title
-            else:
-                formats = r.get("formatStreams", [])
-                if formats:
-                    return formats[-1].get("url"), title
-        except Exception:
-            continue
-
-    return None, None
-
-def download_file_stream(download_url, dest_path, task_id):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(download_url, headers=headers, stream=True, timeout=40)
-    total_length = r.headers.get('content-length')
-
-    if not total_length:
-        with open(dest_path, 'wb') as f:
-            f.write(r.content)
-    else:
-        dl = 0
-        total_length = int(total_length)
-        with open(dest_path, 'wb') as f:
-            for data in r.iter_content(chunk_size=32768):
-                dl += len(data)
-                f.write(data)
-                percent = int((dl / total_length) * 85)
-                progress_tracker[task_id] = {
-                    "percent": percent,
-                    "status": f"Descargando datos: {percent}%"
-                }
-
 def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
     task_dir = os.path.join(TEMP_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    is_audio = (tipo in ("link", "batch"))
-    targets_to_process = []
+    archivos = []
+    urls_to_process = []
 
     try:
         if tipo == "batch":
-            # Búsqueda de canciones
-            try:
-                search_url = f"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q={requests.utils.quote(target)}"
-                queries = requests.get(search_url, timeout=3).json()[1][:cantidad]
-                for q in queries:
-                    # resolver ID buscando en API pública
-                    inv_res = requests.get(f"https://inv.nadeko.net/api/v1/search?q={requests.utils.quote(q)}&type=video", timeout=5).json()
-                    if inv_res and isinstance(inv_res, list):
-                        targets_to_process.append(inv_res[0].get("videoId"))
-            except Exception:
-                pass
+            progress_tracker[task_id] = {"percent": 10, "status": "Buscando temas..."}
+            s = Search(target)
+            results = s.videos[:cantidad]
+            for v in results:
+                urls_to_process.append(v.watch_url)
         else:
-            vid = extract_video_id(target)
-            if vid:
-                targets_to_process.append(vid)
+            urls_to_process.append(clean_youtube_url(target))
 
-        if not targets_to_process:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: Enlace de YouTube no válido."}
-            shutil.rmtree(task_dir, ignore_errors=True)
-            return
-
-        archivos = []
-        for idx, vid in enumerate(targets_to_process):
+        for idx, video_url in enumerate(urls_to_process):
             progress_tracker[task_id] = {
-                "percent": 15,
-                "status": f"Resolviendo archivo ({idx + 1}/{len(targets_to_process)})..."
+                "percent": int(((idx + 0.2) / len(urls_to_process)) * 80) + 10,
+                "status": f"Descargando pista ({idx + 1}/{len(urls_to_process)})..."
             }
 
-            durl, raw_title = resolve_download_url(vid, is_audio=is_audio)
-            if not durl:
-                continue
+            # Cliente Android / Web sin bloqueo de desafío JS
+            yt = YouTube(video_url, client='ANDROID')
 
-            clean_title = re.sub(r'[\\/*?:"<>|]', "", raw_title or f"audio_{vid}")
-            ext = ".mp3" if is_audio else ".mp4"
-            filename = f"{clean_title}{ext}"
-            dest_path = os.path.join(task_dir, filename)
+            clean_title = re.sub(r'[\\/*?:"<>|]', "", yt.title or f"gunter_track_{idx+1}")
 
-            download_file_stream(durl, dest_path, task_id)
-            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+            if tipo == "video":
+                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+                if not stream:
+                    stream = yt.streams.filter(file_extension='mp4').first()
+                filename = f"{clean_title}.mp4"
+                stream.download(output_path=task_dir, filename=filename)
+            else:
+                stream = yt.streams.get_audio_only()
+                filename = f"{clean_title}.mp3"
+                stream.download(output_path=task_dir, filename=filename)
+
+            if os.path.exists(os.path.join(task_dir, filename)):
                 archivos.append(filename)
 
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: La plataforma no permitió extraer este video."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo extraer el audio o video."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
@@ -208,7 +121,7 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         }
 
     except Exception as e:
-        print(f"[ERROR DESCARGA] {str(e)}", flush=True)
+        print(f"[ERROR PYTUBE] {str(e)}", flush=True)
         progress_tracker[task_id] = {"percent": 0, "status": f"Error: {e}"}
         shutil.rmtree(task_dir, ignore_errors=True)
 
@@ -224,7 +137,7 @@ def start_download():
         return jsonify({"status": "error", "message": "Enlace o búsqueda vacía"}), 400
 
     task_id = str(uuid.uuid4())
-    progress_tracker[task_id] = {"percent": 5, "status": "Iniciando descarga..."}
+    progress_tracker[task_id] = {"percent": 5, "status": "Conectando con el servidor..."}
 
     thread = threading.Thread(
         target=run_download, 
