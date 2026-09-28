@@ -1,5 +1,7 @@
 Flask
 requests
-pytubefix
+yt-dlp
+yt-dlp-ejs
+quickjs
 imageio-ffmpeg
 gunicorn
