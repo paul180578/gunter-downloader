@@ -6,27 +6,12 @@ import zipfile
 import threading
 import requests
 from flask import Flask, render_template, request, jsonify, send_file, after_this_request
-import yt_dlp
-import imageio_ffmpeg
 
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
-COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
-SECRET_COOKIES = "/etc/secrets/cookies.txt"
-if os.path.exists(SECRET_COOKIES):
-    try:
-        shutil.copyfile(SECRET_COOKIES, COOKIES_PATH)
-    except Exception:
-        pass
 os.makedirs(TEMP_DIR, exist_ok=True)
-
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-try:
-    os.chmod(FFMPEG_PATH, 0o755)
-except Exception:
-    pass
 
 progress_tracker = {}
 
@@ -47,24 +32,6 @@ def auto_cleanup_worker():
 
 threading.Thread(target=auto_cleanup_worker, daemon=True).start()
 
-def my_progress_hook(d, task_id):
-    if d.get('status') == 'downloading':
-        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-        downloaded = d.get('downloaded_bytes', 0)
-        if total > 0:
-            porcentaje = int((downloaded / total) * 85)
-            progress_tracker[task_id] = {
-                "percent": porcentaje,
-                "status": f"Descargando datos: {porcentaje}%"
-            }
-        else:
-            progress_tracker[task_id] = {"percent": 45, "status": "Descargando flujo..."}
-    elif d.get('status') == 'finished':
-        progress_tracker[task_id] = {
-            "percent": 90,
-            "status": "Ensamblando y procesando archivo..."
-        }
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -83,84 +50,104 @@ def suggest():
         pass
     return jsonify([])
 
+def get_cobalt_stream(url, is_audio=False, video_quality="1080"):
+    cobalt_instances = [
+        "https://api.cobalt.tools",
+        "https://cobalt-api.kwiatekm.pl",
+        "https://api.wuk.sh"
+    ]
+    
+    payload = {
+        "url": url,
+        "downloadMode": "audio" if is_audio else "auto",
+        "audioFormat": "mp3" if is_audio else "best",
+        "videoQuality": video_quality if not is_audio else "720"
+    }
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    for instance in cobalt_instances:
+        try:
+            res = requests.post(f"{instance}/", json=payload, headers=headers, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("status") in ("tunnel", "redirect", "success"):
+                    return data.get("url")
+        except Exception:
+            continue
+    return None
+
+def download_file_stream(download_url, dest_path, task_id):
+    r = requests.get(download_url, stream=True, timeout=30)
+    total_length = r.headers.get('content-length')
+
+    if total_length is None:
+        with open(dest_path, 'wb') as f:
+            f.write(r.content)
+    else:
+        dl = 0
+        total_length = int(total_length)
+        with open(dest_path, 'wb') as f:
+            for data in r.iter_content(chunk_size=4096*8):
+                dl += len(data)
+                f.write(data)
+                percent = int((dl / total_length) * 85)
+                progress_tracker[task_id] = {
+                    "percent": percent,
+                    "status": f"Descargando datos: {percent}%"
+                }
+
 def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
     task_dir = os.path.join(TEMP_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    base_opts = {
-        'ffmpeg_location': FFMPEG_PATH,
-        'socket_timeout': 30,
-        'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv', 'web_safari', 'mweb']
-            }
-        },
-        'quiet': True,
-    }
-
-    if os.path.exists(COOKIES_PATH):
-        base_opts['cookiefile'] = COOKIES_PATH
-
-    if tipo == "video":
-        if calidad_video == "best" or calidad_video == "2160":
-            formato = 'bestvideo+bestaudio/best'
-        else:
-            formato = f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
-
-        opciones = {
-            **base_opts,
-            'format': formato,
-            'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'merge_output_format': 'mp4',
-            'noplaylist': True,
-            'ignoreerrors': False,
-            'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-        }
-        download_target = target
-
-    elif tipo == "link":
-        if "&list=RD" in target:
-            target = target.split("&list=RD")[0]
-        download_target = target
-        opciones = {
-            **base_opts,
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'noplaylist': True,
-            'ignoreerrors': False,
-            'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-        }
-
-    else:
-        download_target = f"ytsearch{cantidad}:{target}"
-        opciones = {
-            **base_opts,
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'noplaylist': False,
-            'ignoreerrors': True,
-            'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-        }
-
     try:
-        with yt_dlp.YoutubeDL(opciones) as ydl:
-            ydl.download([download_target])
+        urls_to_download = []
+        is_audio = (tipo in ("link", "batch"))
 
-        extensiones = (".mp3", ".mp4", ".mkv", ".webm")
-        archivos = [f for f in os.listdir(task_dir) if f.endswith(extensiones)]
+        if tipo == "batch":
+            search_api = f"https://pipedapi.kavin.rocks/search?q={requests.utils.quote(target)}&filter=videos"
+            try:
+                s_res = requests.get(search_api, timeout=6).json()
+                items = s_res.get("items", [])[:cantidad]
+                for it in items:
+                    v_url = it.get("url")
+                    if v_url:
+                        urls_to_download.append(("https://www.youtube.com" + v_url, it.get("title", "audio")))
+            except Exception:
+                urls_to_download.append((target, "audio"))
+        else:
+            urls_to_download.append((target, "archivo"))
+
+        archivos = []
+        for idx, (media_url, base_name) in enumerate(urls_to_download):
+            progress_tracker[task_id] = {
+                "percent": int((idx / len(urls_to_download)) * 30) + 10,
+                "status": f"Procesando enlace {idx + 1} de {len(urls_to_download)}..."
+            }
+            
+            stream_url = get_cobalt_stream(media_url, is_audio=is_audio, video_quality=calidad_video)
+            if not stream_url:
+                continue
+
+            clean_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '_', '-')).rstrip()
+            if not clean_name:
+                clean_name = f"gunter_media_{idx+1}"
+
+            ext = ".mp3" if is_audio else ".mp4"
+            filename = f"{clean_name}{ext}"
+            dest_file = os.path.join(task_dir, filename)
+
+            download_file_stream(stream_url, dest_file, task_id)
+            if os.path.exists(dest_file):
+                archivos.append(filename)
+
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo obtener el archivo."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: El enlace no pudo ser procesado."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
@@ -177,8 +164,9 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             "archivos": archivos,
             "zip_file": zip_name if len(archivos) > 1 else None
         }
+
     except Exception as e:
-        print(f"[ERROR DESCARGA] {str(e)}", flush=True)
+        print(f"[ERROR MOTOR] {str(e)}", flush=True)
         progress_tracker[task_id] = {"percent": 0, "status": f"Error: {e}"}
         shutil.rmtree(task_dir, ignore_errors=True)
 
