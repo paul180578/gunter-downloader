@@ -1,7 +1,3 @@
 Flask
 requests
-yt-dlp
-yt-dlp-ejs
-quickjs
-imageio-ffmpeg
 gunicorn
