@@ -1,5 +1,3 @@
 Flask
 requests
-yt-dlp>=2025.1.1
-imageio-ffmpeg
 gunicorn
