@@ -14,6 +14,7 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
+COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
@@ -94,23 +95,18 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         'ffmpeg_location': FFMPEG_PATH,
         'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
         'noplaylist': True,
-        'socket_timeout': 20,
+        'socket_timeout': 30,
         'nocheckcertificate': True,
         'quiet': True,
+        'no_warnings': True,
         'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android_creator', 'android', 'web_safari'],
-                'player_skip': ['configs', 'webpage']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-        }
     }
 
+    if os.path.exists(COOKIES_PATH):
+        ydl_opts['cookiefile'] = COOKIES_PATH
+
     if tipo == "video":
-        ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        ydl_opts['format'] = 'bestvideo+bestaudio/best' if calidad_video in ("best", "2160") else f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
         ydl_opts['merge_output_format'] = 'mp4'
         download_target = clean_target
 
@@ -141,7 +137,7 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         extensiones = (".mp3", ".mp4", ".mkv", ".webm")
         archivos = [f for f in os.listdir(task_dir) if f.endswith(extensiones)]
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo generar el archivo multimedia."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo generar el archivo."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
