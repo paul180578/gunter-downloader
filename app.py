@@ -13,6 +13,7 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
+COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
@@ -80,12 +81,15 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
     task_dir = os.path.join(TEMP_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    extractor_args_config = {
-        'youtube': {
-            'player_client': ['android', 'ios', 'web_creator'],
-            'player_skip': ['webpage', 'configs']
-        }
+    base_opts = {
+        'ffmpeg_location': FFMPEG_PATH,
+        'socket_timeout': 30,
+        'nocheckcertificate': True,
+        'quiet': True,
     }
+
+    if os.path.exists(COOKIES_PATH):
+        base_opts['cookiefile'] = COOKIES_PATH
 
     if tipo == "video":
         if calidad_video == "best" or calidad_video == "2160":
@@ -94,17 +98,13 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             formato = f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
 
         opciones = {
+            **base_opts,
             'format': formato,
             'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'ffmpeg_location': FFMPEG_PATH,
             'merge_output_format': 'mp4',
             'noplaylist': True,
             'ignoreerrors': False,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': extractor_args_config,
-            'socket_timeout': 20,
-            'nocheckcertificate': True,
-            'quiet': True,
         }
         download_target = target
 
@@ -113,41 +113,33 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
             target = target.split("&list=RD")[0]
         download_target = target
         opciones = {
+            **base_opts,
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'ffmpeg_location': FFMPEG_PATH,
             'noplaylist': True,
             'ignoreerrors': False,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': extractor_args_config,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
-            'socket_timeout': 20,
-            'nocheckcertificate': True,
-            'quiet': True,
         }
 
     else:
         download_target = f"ytsearch{cantidad}:{target}"
         opciones = {
+            **base_opts,
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-            'ffmpeg_location': FFMPEG_PATH,
             'noplaylist': False,
             'ignoreerrors': True,
             'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-            'extractor_args': extractor_args_config,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
-            'socket_timeout': 20,
-            'nocheckcertificate': True,
-            'quiet': True,
         }
 
     try:
