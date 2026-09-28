@@ -85,6 +85,12 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         'ffmpeg_location': FFMPEG_PATH,
         'socket_timeout': 30,
         'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'tv_embedded', 'android'],
+                'player_skip': ['webpage', 'configs']
+            }
+        },
         'quiet': True,
     }
 
