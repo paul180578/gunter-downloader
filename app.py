@@ -87,8 +87,8 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         'nocheckcertificate': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'tv_embedded', 'android'],
-                'player_skip': ['webpage', 'configs']
+                'player_client': ['ios'],
+                'player_skip': ['webpage', 'configs', 'js']
             }
         },
         'quiet': True,
