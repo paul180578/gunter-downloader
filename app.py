@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import time
 import shutil
@@ -32,6 +33,15 @@ def auto_cleanup_worker():
 
 threading.Thread(target=auto_cleanup_worker, daemon=True).start()
 
+def clean_youtube_url(url):
+    """Extrae la URL limpia del video quitando playlists y listas de recomendación."""
+    url = url.strip()
+    match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?]|$)', url)
+    if match:
+        video_id = match.group(1)
+        return f"https://www.youtube.com/watch?v=video_id"
+    return url
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -50,15 +60,19 @@ def suggest():
         pass
     return jsonify([])
 
-def get_cobalt_stream(url, is_audio=False, video_quality="1080"):
-    cobalt_instances = [
-        "https://api.cobalt.tools",
+def get_media_stream(url, is_audio=False, video_quality="1080"):
+    clean_url = clean_youtube_url(url)
+    
+    # 1. Intentar instancias de Cobalt activas
+    cobalt_servers = [
         "https://cobalt-api.kwiatekm.pl",
-        "https://api.wuk.sh"
+        "https://api.wuk.sh",
+        "https://api.cobalt.tools",
+        "https://co.eepy.today"
     ]
     
     payload = {
-        "url": url,
+        "url": clean_url,
         "downloadMode": "audio" if is_audio else "auto",
         "audioFormat": "mp3" if is_audio else "best",
         "videoQuality": video_quality if not is_audio else "720"
@@ -67,32 +81,58 @@ def get_cobalt_stream(url, is_audio=False, video_quality="1080"):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
-    for instance in cobalt_instances:
+    for server in cobalt_servers:
         try:
-            res = requests.post(f"{instance}/", json=payload, headers=headers, timeout=12)
+            res = requests.post(f"{server}/", json=payload, headers=headers, timeout=8)
             if res.status_code == 200:
                 data = res.json()
-                if data.get("status") in ("tunnel", "redirect", "success"):
-                    return data.get("url")
+                stream_url = data.get("url")
+                if stream_url:
+                    return stream_url, data.get("filename")
         except Exception:
             continue
-    return None
+
+    # 2. Respaldo: API de Invidious pública para audio/video directo
+    try:
+        match = re.search(r'v=([0-9A-Za-z_-]{11})', clean_url)
+        if match:
+            vid = match.group(1)
+            invid_url = f"https://inv.nadeko.net/api/v1/videos/{vid}"
+            inv_res = requests.get(invid_url, headers=headers, timeout=8).json()
+            title = inv_res.get("title", "gunter_audio")
+            
+            if is_audio:
+                adaptive = inv_res.get("adaptiveFormats", [])
+                audio_streams = [f for f in adaptive if f.get("type", "").startswith("audio/")]
+                if audio_streams:
+                    best_audio = sorted(audio_streams, key=lambda x: int(x.get("bitrate", 0)), reverse=True)[0]
+                    return best_audio.get("url"), f"{title}.mp3"
+            else:
+                formats = inv_res.get("formatStreams", [])
+                if formats:
+                    best_video = formats[-1]
+                    return best_video.get("url"), f"{title}.mp4"
+    except Exception:
+        pass
+
+    return None, None
 
 def download_file_stream(download_url, dest_path, task_id):
-    r = requests.get(download_url, stream=True, timeout=30)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(download_url, headers=headers, stream=True, timeout=40)
     total_length = r.headers.get('content-length')
 
-    if total_length is None:
+    if not total_length:
         with open(dest_path, 'wb') as f:
             f.write(r.content)
     else:
         dl = 0
         total_length = int(total_length)
         with open(dest_path, 'wb') as f:
-            for data in r.iter_content(chunk_size=4096*8):
+            for data in r.iter_content(chunk_size=32768):
                 dl += len(data)
                 f.write(data)
                 percent = int((dl / total_length) * 85)
@@ -110,14 +150,14 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         is_audio = (tipo in ("link", "batch"))
 
         if tipo == "batch":
-            search_api = f"https://pipedapi.kavin.rocks/search?q={requests.utils.quote(target)}&filter=videos"
+            search_api = f"https://inv.nadeko.net/api/v1/search?q={requests.utils.quote(target)}&type=video"
             try:
                 s_res = requests.get(search_api, timeout=6).json()
-                items = s_res.get("items", [])[:cantidad]
+                items = s_res[:cantidad] if isinstance(s_res, list) else []
                 for it in items:
-                    v_url = it.get("url")
-                    if v_url:
-                        urls_to_download.append(("https://www.youtube.com" + v_url, it.get("title", "audio")))
+                    v_id = it.get("videoId")
+                    if v_id:
+                        urls_to_download.append((f"https://www.youtube.com/watch?v={v_id}", it.get("title", "audio")))
             except Exception:
                 urls_to_download.append((target, "audio"))
         else:
@@ -126,28 +166,24 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         archivos = []
         for idx, (media_url, base_name) in enumerate(urls_to_download):
             progress_tracker[task_id] = {
-                "percent": int((idx / len(urls_to_download)) * 30) + 10,
-                "status": f"Procesando enlace {idx + 1} de {len(urls_to_download)}..."
+                "percent": 15,
+                "status": f"Obteniendo flujo ({idx + 1}/{len(urls_to_download)})..."
             }
             
-            stream_url = get_cobalt_stream(media_url, is_audio=is_audio, video_quality=calidad_video)
+            stream_url, suggested_filename = get_media_stream(media_url, is_audio=is_audio, video_quality=calidad_video)
             if not stream_url:
                 continue
 
-            clean_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '_', '-')).rstrip()
-            if not clean_name:
-                clean_name = f"gunter_media_{idx+1}"
-
-            ext = ".mp3" if is_audio else ".mp4"
-            filename = f"{clean_name}{ext}"
-            dest_file = os.path.join(task_dir, filename)
+            name = suggested_filename if suggested_filename else f"{base_name}_{idx+1}.{'mp3' if is_audio else 'mp4'}"
+            clean_name = re.sub(r'[\\/*?:"<>|]', "", name)
+            dest_file = os.path.join(task_dir, clean_name)
 
             download_file_stream(stream_url, dest_file, task_id)
-            if os.path.exists(dest_file):
-                archivos.append(filename)
+            if os.path.exists(dest_file) and os.path.getsize(dest_file) > 1000:
+                archivos.append(clean_name)
 
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: El enlace no pudo ser procesado."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: Enlace no disponible o restringido por la plataforma."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
@@ -166,7 +202,6 @@ def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
         }
 
     except Exception as e:
-        print(f"[ERROR MOTOR] {str(e)}", flush=True)
         progress_tracker[task_id] = {"percent": 0, "status": f"Error: {e}"}
         shutil.rmtree(task_dir, ignore_errors=True)
 
