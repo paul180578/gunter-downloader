@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GUNTER | Music & Video 4K Downloader</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;900&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="ambient-glow glow-orange1"></div>
+  <div class="ambient-glow glow-orange2"></div>
+  <div class="bg-grid"></div>
+  <div class="bg-beam"></div>
+  <div class="embers"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+
+  <main class="container">
+    <header class="app-header">
+
+      <h1 class="gunter-title">GUNTER<span>.PRO</span></h1>
+      <p class="tagline">AUDIO 320 KBPS // VIDEOS 4K ULTRA HD</p>
+    </header>
+
+    <nav class="tab-bar">
+      <button class="tab-btn active" id="tab-video-btn" onclick="switchTab('tab-video')">
+        <span></span> VIDEO 4K / HD
+      </button>
+      <button class="tab-btn" id="tab-link-btn" onclick="switchTab('tab-link')">
+        <span></span> MP3 ENLACE
+      </button>
+      <button class="tab-btn" id="tab-batch-btn" onclick="switchTab('tab-batch')">
+        <span></span> MP3 BÚSQUEDA
+      </button>
+    </nav>
+
+
+    <section id="tab-video" class="tab-content active">
+      <div class="gunter-card">
+        <div class="platforms-badges">
+          <span class="badge">TikTok</span>
+          <span class="badge">Instagram</span>
+          <span class="badge">Facebook</span>
+          <span class="badge">YouTube</span>
+        </div>
+        <label for="video-url-input">Pega el link del video o reel:</label>
+        <div class="input-wrapper">
+          <input type="text" id="video-url-input" placeholder="https://..." autocomplete="off">
+        </div>
+
+        <div class="select-group">
+          <label for="video-quality">Resolución deseada:</label>
+          <select id="video-quality" class="gunter-select">
+            <option value="best"> Máxima Calidad (4K / 2K si está disponible)</option>
+            <option value="1080" selected> Full HD (1080p) - Recomendado</option>
+            <option value="720"> HD Rápido (720p)</option>
+          </select>
+        </div>
+
+        <button class="action-btn" id="btn-descarga-video" onclick="iniciarProceso('video')">
+          DESCARGAR VIDEO MP4
+        </button>
+      </div>
+    </section>
+
+
+    <section id="tab-link" class="tab-content">
+      <div class="gunter-card">
+        <label for="url-input">Pega el enlace de YouTube:</label>
+        <div class="input-wrapper">
+          <input type="text" id="url-input" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+        </div>
+        <button class="action-btn" id="btn-descarga-link" onclick="iniciarProceso('link')">
+          DESCARGAR MP3 HQ (320 KBPS)
+        </button>
+      </div>
+    </section>
+
+    <section id="tab-batch" class="tab-content">
+      <div class="gunter-card">
+        <label for="keyword-input">Palabras clave o artista:</label>
+        <div class="search-box-wrapper">
+          <input type="text" id="keyword-input" placeholder="Buscador = al de Youtube" autocomplete="off">
+          <ul id="suggestions-list" class="suggestions-dropdown hidden"></ul>
+        </div>
+
+        <div class="slider-control">
+          <div class="slider-header">
+            <span>Cantidad de canciones:</span>
+            <span id="batch-count-val" class="highlight-val">10</span>
+          </div>
+          <input type="range" id="batch-count" min="1" max="30" value="10" oninput="document.getElementById('batch-count-val').innerText = this.value">
+        </div>
+
+        <button class="action-btn" id="btn-descarga-batch" onclick="iniciarProceso('batch')">
+          BUSCAR Y EXTRAER MP3
+        </button>
+      </div>
+    </section>
+
+
+    <div id="status-panel" class="status-panel hidden">
+      <div class="status-header">
+        <span id="status-text">Iniciando...</span>
+        <span id="percent-text" class="percent-val">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-bar"></div>
+      </div>
+      <div id="download-hint" class="download-hint hidden"></div>
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
