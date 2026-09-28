@@ -7,34 +7,12 @@ import zipfile
 import threading
 import requests
 from flask import Flask, render_template, request, jsonify, send_file, after_this_request
-import yt_dlp
-import imageio_ffmpeg
 
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
 os.makedirs(TEMP_DIR, exist_ok=True)
-
-# Buscar cookies.txt tanto en BASE_DIR como en la raíz de ejecución
-possible_cookie_paths = [
-    os.path.join(BASE_DIR, "cookies.txt"),
-    os.path.abspath("cookies.txt"),
-    "/opt/render/project/src/cookies.txt"
-]
-COOKIES_PATH = None
-for p in possible_cookie_paths:
-    if os.path.exists(p) and os.path.getsize(p) > 0:
-        COOKIES_PATH = p
-        break
-
-print(f"--> [CONFIG] Ruta de cookies detectada: {COOKIES_PATH}", flush=True)
-
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-try:
-    os.chmod(FFMPEG_PATH, 0o755)
-except Exception:
-    pass
 
 progress_tracker = {}
 
@@ -55,30 +33,12 @@ def auto_cleanup_worker():
 
 threading.Thread(target=auto_cleanup_worker, daemon=True).start()
 
-def clean_youtube_url(url):
+def extract_video_id(url):
     url = url.strip()
-    match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?]|$)', url)
+    match = re.search(r'(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})', url)
     if match:
-        return f"https://www.youtube.com/watch?v={match.group(1)}"
-    return url
-
-def my_progress_hook(d, task_id):
-    if d.get('status') == 'downloading':
-        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-        downloaded = d.get('downloaded_bytes', 0)
-        if total > 0:
-            porcentaje = int((downloaded / total) * 85)
-            progress_tracker[task_id] = {
-                "percent": porcentaje,
-                "status": f"Descargando datos: {porcentaje}%"
-            }
-        else:
-            progress_tracker[task_id] = {"percent": 45, "status": "Descargando flujo..."}
-    elif d.get('status') == 'finished':
-        progress_tracker[task_id] = {
-            "percent": 90,
-            "status": "Ensamblando y procesando archivo..."
-        }
+        return match.group(1)
+    return None
 
 @app.route("/")
 def index():
@@ -98,63 +58,138 @@ def suggest():
         pass
     return jsonify([])
 
+def resolve_download_url(video_id, is_audio=True):
+    """Obtiene el enlace directo de descarga sin requerir autenticación ni cookies locales."""
+    clean_url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # Intento 1: API de conversión pública y2mate
+    try:
+        init_res = requests.post(
+            "https://www-y2mate.com/mates/analyzeV2/ajax",
+            data={"k_query": clean_url, "k_page": "home", "hl": "es", "q_auto": 0},
+            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
+            timeout=10
+        ).json()
+        
+        vid = init_res.get("vid")
+        title = init_res.get("title", f"media_{video_id}")
+        
+        if is_audio:
+            links = init_res.get("links", {}).get("mp3", {})
+            k = next(iter(links.values()))["k"]
+        else:
+            links = init_res.get("links", {}).get("mp4", {})
+            k = next(iter(links.values()))["k"]
+
+        conv_res = requests.post(
+            "https://www-y2mate.com/mates/convertV2/index",
+            data={"vid": vid, "k": k},
+            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
+            timeout=15
+        ).json()
+
+        dlink = conv_res.get("dlink")
+        if dlink:
+            return dlink, title
+    except Exception:
+        pass
+
+    # Intento 2: Invidious Stream Resolver
+    invidious_hosts = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://yt.artemislena.eu"
+    ]
+    for host in invidious_hosts:
+        try:
+            r = requests.get(f"{host}/api/v1/videos/{video_id}", timeout=6).json()
+            title = r.get("title", f"media_{video_id}")
+            if is_audio:
+                formats = [f for f in r.get("adaptiveFormats", []) if "audio" in f.get("type", "")]
+                if formats:
+                    return formats[0].get("url"), title
+            else:
+                formats = r.get("formatStreams", [])
+                if formats:
+                    return formats[-1].get("url"), title
+        except Exception:
+            continue
+
+    return None, None
+
+def download_file_stream(download_url, dest_path, task_id):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(download_url, headers=headers, stream=True, timeout=40)
+    total_length = r.headers.get('content-length')
+
+    if not total_length:
+        with open(dest_path, 'wb') as f:
+            f.write(r.content)
+    else:
+        dl = 0
+        total_length = int(total_length)
+        with open(dest_path, 'wb') as f:
+            for data in r.iter_content(chunk_size=32768):
+                dl += len(data)
+                f.write(data)
+                percent = int((dl / total_length) * 85)
+                progress_tracker[task_id] = {
+                    "percent": percent,
+                    "status": f"Descargando datos: {percent}%"
+                }
+
 def run_download(task_id, tipo, target, cantidad, calidad_video="best"):
     task_dir = os.path.join(TEMP_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    clean_target = clean_youtube_url(target) if tipo != "batch" else target
-
-    ydl_opts = {
-        'ffmpeg_location': FFMPEG_PATH,
-        'outtmpl': os.path.join(task_dir, '%(title)s.%(ext)s'),
-        'noplaylist': True,
-        'socket_timeout': 30,
-        'nocheckcertificate': True,
-        'quiet': False,
-        'verbose': True,
-        'progress_hooks': [lambda d: my_progress_hook(d, task_id)],
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
-            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
-        }
-    }
-
-    if COOKIES_PATH:
-        ydl_opts['cookiefile'] = COOKIES_PATH
-
-    if tipo == "video":
-        ydl_opts['format'] = 'bestvideo+bestaudio/best' if calidad_video in ("best", "2160") else f'bestvideo[height<={calidad_video}]+bestaudio/best[height<={calidad_video}]/best'
-        ydl_opts['merge_output_format'] = 'mp4'
-        download_target = clean_target
-
-    elif tipo == "link":
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }]
-        download_target = clean_target
-
-    else:
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['noplaylist'] = False
-        ydl_opts['ignoreerrors'] = True
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }]
-        download_target = f"ytsearch{cantidad}:{clean_target}"
+    is_audio = (tipo in ("link", "batch"))
+    targets_to_process = []
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([download_target])
+        if tipo == "batch":
+            # Búsqueda de canciones
+            try:
+                search_url = f"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q={requests.utils.quote(target)}"
+                queries = requests.get(search_url, timeout=3).json()[1][:cantidad]
+                for q in queries:
+                    # resolver ID buscando en API pública
+                    inv_res = requests.get(f"https://inv.nadeko.net/api/v1/search?q={requests.utils.quote(q)}&type=video", timeout=5).json()
+                    if inv_res and isinstance(inv_res, list):
+                        targets_to_process.append(inv_res[0].get("videoId"))
+            except Exception:
+                pass
+        else:
+            vid = extract_video_id(target)
+            if vid:
+                targets_to_process.append(vid)
 
-        extensiones = (".mp3", ".mp4", ".mkv", ".webm")
-        archivos = [f for f in os.listdir(task_dir) if f.endswith(extensiones)]
+        if not targets_to_process:
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: Enlace de YouTube no válido."}
+            shutil.rmtree(task_dir, ignore_errors=True)
+            return
+
+        archivos = []
+        for idx, vid in enumerate(targets_to_process):
+            progress_tracker[task_id] = {
+                "percent": 15,
+                "status": f"Resolviendo archivo ({idx + 1}/{len(targets_to_process)})..."
+            }
+
+            durl, raw_title = resolve_download_url(vid, is_audio=is_audio)
+            if not durl:
+                continue
+
+            clean_title = re.sub(r'[\\/*?:"<>|]', "", raw_title or f"audio_{vid}")
+            ext = ".mp3" if is_audio else ".mp4"
+            filename = f"{clean_title}{ext}"
+            dest_path = os.path.join(task_dir, filename)
+
+            download_file_stream(durl, dest_path, task_id)
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                archivos.append(filename)
+
         if not archivos:
-            progress_tracker[task_id] = {"percent": 0, "status": "Error: No se pudo generar el archivo."}
+            progress_tracker[task_id] = {"percent": 0, "status": "Error: La plataforma no permitió extraer este video."}
             shutil.rmtree(task_dir, ignore_errors=True)
             return
 
